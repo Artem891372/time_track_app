@@ -5,6 +5,7 @@ import colorsys
 import random
 import sqlite3
 from datetime import datetime
+import json
 
 class SimpleColorGenerator:
     """Простой генератор хорошо различимых цветов"""
@@ -128,14 +129,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Настройка секундомера
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.update_display)
-        self.timer.setInterval(10)  # 10 мс для миллисекунд
+        self.timer.setInterval(1000)  # 1000 мс = 1 секунда для обновления времени
 
         self.elapsed_timer = QtCore.QElapsedTimer()
         self.offset = 0
         self.is_running = False
+        self.last_update_time = 0  # Время последнего обновления БД
 
-        self.ui.time_number.setDigitCount(11)  # Для mm:ss.zzz
-        self.ui.time_number.display("00:00:00.00")
+        self.ui.time_number.setDigitCount(9)  # Для hh:mm:ss.zz
+        self.ui.time_number.display("00:00:00")
 
         self.ui.start_button.clicked.connect(self.on_start_pause)
 
@@ -188,12 +190,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.type_combo_box.setCurrentIndex(i)
         self.ui.type_combo_box.setCurrentIndex(0)
 
-    def read_config(self, config_path = 'config.json'):
-        import json
+        # Загружаем данные для начального типа события
+        self.change_current_type_event()
 
+    def read_config(self, config_path='config.json'):
         with open(config_path, mode='r') as f:
-            data = json.load(f)
-            return data
+            return json.load(f)
         
     def on_slice_hovered(self, state, slice):
         """Обработчик наведения на сектор"""
@@ -202,7 +204,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             slice.setExploded(False)
 
-    def update_type_event(self, event_name, indx = None):
+    def update_type_event(self, event_name, indx=None):
         if not indx:
             self.ui.type_combo_box.addItem(event_name)
             self.update_marker_pie(event_name)
@@ -210,40 +212,48 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.type_combo_box.setItemText(indx, event_name)
             self.change_current_type_event()
 
-    def update_today_data(self, event_name, add = True, complite_sec = None):
+    def update_today_data(self, event_name, complite_sec):
+        """Обновляет данные в БД с указанным количеством секунд"""
         connection = sqlite3.connect('main.db')
         cursor = connection.cursor()
-        
-        cursor.execute("UPDATE tasks SET start_datetime = datetime('now', 'localtime') WHERE complite_sec=0;")
 
-        if not add:
-            cursor.execute("UPDATE tasks SET complite_sec=?, last_update=? WHERE event_name=? AND date_day = date('now');",
-                        (complite_sec, datetime.now(), event_name,))
-        else:
-            cursor.execute("UPDATE tasks SET complite_sec=complite_sec+60, last_update=? WHERE event_name=? AND date_day = date('now');",
-                        (datetime.now(), event_name,))
-
+        # Получаем текущее время в секундах для этой задачи
+        cursor.execute("SELECT complite_sec FROM tasks WHERE event_name=? AND date_day = date('now');", (event_name,))
+        result = cursor.fetchone()
         
-        connection.commit()
+        current_seconds = result[0] if result else 0
+        
+        # Обновляем только если время изменилось
+        if complite_sec != current_seconds:
+            cursor.execute("""
+                UPDATE tasks 
+                SET complite_sec=?, last_update=?
+                WHERE event_name=? AND date_day = date('now');
+            """, (complite_sec, datetime.now().isoformat(), event_name))
+            
+            connection.commit()
+        
         connection.close()
-    
+
     def get_today_data_for_type(self, event_name):
         connection = sqlite3.connect('main.db')
         connection.row_factory = sqlite3.Row
         cursor = connection.cursor()
 
-        cursor.execute("SELECT * FROM tasks WHERE event_name=? AND date_day = date('now');",(event_name,))
+        cursor.execute("SELECT * FROM tasks WHERE event_name=? AND date_day = date('now');", (event_name,))
         results = cursor.fetchall()
 
         if len(results) == 0:
+            # Создаем новую запись, если ее нет
             cursor.execute("""
-INSERT INTO tasks (event_name, date_day, complite_sec, hour_week_limit, start_datetime, last_update)
-VALUES (?, date('now'), 0, ?, NULL, NULL);
-""", (event_name, self.config_data['type_events'][event_name]))
+                INSERT INTO tasks (event_name, date_day, complite_sec, hour_week_limit, start_datetime, last_update)
+                VALUES (?, date('now'), 0, ?, NULL, NULL);
+            """, (event_name, self.config_data['type_events'][event_name]))
 
             connection.commit()
             connection.close()
             
+            # Повторно запрашиваем данные
             return self.get_today_data_for_type(event_name)
         
         connection.close()
@@ -254,7 +264,10 @@ VALUES (?, date('now'), 0, ?, NULL, NULL);
         connection.row_factory = sqlite3.Row
         cursor = connection.cursor()
 
-        cursor.execute("SELECT * FROM tasks WHERE event_name=? AND date_day >= date('now', '-6 days') AND date_day <  date('now', '+1 day');",(event_name,))
+        cursor.execute("""
+            SELECT * FROM tasks 
+            WHERE event_name=? AND date_day >= date('now', '-6 days') AND date_day <= date('now');
+        """, (event_name,))
         results = cursor.fetchall()
         connection.close()
             
@@ -262,50 +275,61 @@ VALUES (?, date('now'), 0, ?, NULL, NULL);
 
     def change_current_type_event(self):
         current_type = self.ui.type_combo_box.currentText()
-        if not current_type == '':
+        if current_type:
             max_week_hour_for_type = self.config_data['type_events'][current_type]
             today_data = self.get_today_data_for_type(current_type)
             last_week_data = self.get_last_week_data_for_type(current_type)
             
-            self.ui.progress_hour_day.setValue(today_data[0]["complite_sec"])
-            sum_week_secs = 0
-            for d in last_week_data:
-                sum_week_secs+=d["complite_sec"]
-                
+            # Устанавливаем прогресс-бары
+            completed_seconds_today = today_data[0]["complite_sec"]
+            self.ui.progress_hour_day.setValue(completed_seconds_today)
+            
+            # Вычисляем общее время за неделю
+            sum_week_secs = sum(d["complite_sec"] for d in last_week_data)
             self.ui.progress_hour_week.setValue(sum_week_secs)
 
-            self.ui.progress_hour_week.setMaximum(max_week_hour_for_type*3600)
-            self.ui.progress_hour_day.setMaximum(int(max_week_hour_for_type*(3600/7)))
+            # Устанавливаем максимальные значения
+            daily_max_seconds = int((max_week_hour_for_type * 3600) / 7)
+            weekly_max_seconds = max_week_hour_for_type * 3600
+            
+            self.ui.progress_hour_day.setMaximum(daily_max_seconds)
+            self.ui.progress_hour_week.setMaximum(weekly_max_seconds)
 
-            self.offset = today_data[0]["complite_sec"]*1000
+            # Устанавливаем offset для таймера
+            self.offset = completed_seconds_today * 1000
+            hours = int(completed_seconds_today // 3600)
+            minutes = int((completed_seconds_today % 3600) // 60)
+            seconds = int(completed_seconds_today % 60)
+            
+            text = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            self.ui.time_number.display(text)
             self.elapsed_timer.restart()
-            self.update_display()
 
-            self.update_marker_pie(current_type, today_data[0]["complite_sec"]/(24*36), self.ui.type_combo_box.currentIndex()+1)
+            # Обновляем диаграмму
+            daily_percentage = (completed_seconds_today / daily_max_seconds) * 100 if daily_max_seconds > 0 else 0
+            self.update_marker_pie(current_type, daily_percentage, self.ui.type_combo_box.currentIndex() + 1)
 
     def base_slice_change(self, value):
         """
-        Docstring для base_slice_change
+        Изменение базовой части (отдых)
         
         :param value: Величина на добавление или уменьшение базовой части
         """
-
-        base_value = self.series.slices()[0].value()
+        base_slice = self.series.slices()[0]
+        base_value = base_slice.value()
         new_value = base_value + value
 
         if new_value <= 0:
-            slice = self.series.slices()[0]
-            slice.setValue(0)
-            slice.setLabel(f"0%")
+            base_slice.setValue(0)
+            base_slice.setLabel("0%")
             self.chart.legend().markers()[0].setVisible(False)
         else:
-            slice = self.series.slices()[0]
-            slice.setValue(new_value)
-            slice.setLabel(f"{new_value:.1f}%")
+            base_slice.setValue(new_value)
+            base_slice.setLabel(f"{new_value:.1f}%")
 
-    def update_marker_pie(self, event_name = '', value = 0, indx = None):
-        if not indx:
-            value = float(value)
+    def update_marker_pie(self, event_name='', value=0, indx=None):
+        if indx is None:
+            # Добавление нового сектора
             slice = QPieSlice(event_name, value)
             slice.setColor(self.colors.pop())
             slice.setLabelPosition(QPieSlice.LabelPosition.LabelInsideNormal)
@@ -319,47 +343,74 @@ VALUES (?, date('now'), 0, ?, NULL, NULL);
 
             self.base_slice_change(-value)
         else:
-            current_value = self.series.slices()[indx].value()
-            self.series.slices()[indx].setValue(value)
-            self.base_slice_change(current_value-value)
+            # Обновление существующего сектора
+            if indx < len(self.series.slices()):
+                current_slice = self.series.slices()[indx]
+                current_value = current_slice.value()
+                current_slice.setValue(value)
+                current_slice.setLabel(f"{value:.1f}%")
+                self.base_slice_change(current_value - value)
         
         self.chart_view.update()
 
     def update_display(self):
+        """Обновление отображения времени"""
+        if not self.is_running:
+            return
+            
         elapsed = self.elapsed_timer.elapsed() + self.offset
-        secs = elapsed / 1000
-        mins = int(secs // 60)
-        hors = int(mins // 60)
-        mins %= 60
-        secs %= 60
-        hors %= 24
-        if secs == 1:
-            self.update_today_data(self.ui.type_combo_box.currentText(), add=True)
-
-        msecs = int((secs - int(secs)) * 100)
-        text = f"{hors:02d}:{mins:02d}:{int(secs):02d}.{msecs:02d}"
+        total_seconds = elapsed / 1000.0
+        
+        # Обновляем данные в БД каждую 1 секунду
+        current_time = int(total_seconds)
+        if current_time >= self.last_update_time + 1:
+            current_type = self.ui.type_combo_box.currentText()
+            if current_type:
+                self.update_today_data(current_type, current_time)
+                self.last_update_time = current_time
+                # Обновляем отображение прогресса
+                self.change_current_type_event()
+        
+        # Форматирование времени для отображения
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        seconds = int(total_seconds % 60)
+        
+        text = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         self.ui.time_number.display(text)
 
     def on_start_pause(self):
+        """Обработчик нажатия кнопки Старт/Пауза"""
         if self.is_running:
-            self.offset += self.elapsed_timer.elapsed()
+            # Останавливаем таймер
             self.timer.stop()
-            self.ui.start_button.setText("Старт")
             self.is_running = False
+            self.ui.start_button.setText("Старт")
+            
+            # Сохраняем текущее время в БД
+            current_type = self.ui.type_combo_box.currentText()
+            if current_type:
+                elapsed = self.elapsed_timer.elapsed() + self.offset
+                completed_seconds = int(elapsed / 1000)
+                self.update_today_data(current_type, completed_seconds)
         else:
+            # Запускаем таймер
             self.elapsed_timer.start()
             self.timer.start()
-            self.ui.start_button.setText("Пауза")
             self.is_running = True
+            self.ui.start_button.setText("Пауза")
+            
+            # Сбрасываем время последнего обновления
+            self.last_update_time = 0
 
 if __name__ == "__main__":
-
+    # Инициализация базы данных
     conn = sqlite3.connect('main.db')
-
+    
     with open('init.sql', 'r') as f:
         schema = f.read()
         conn.executescript(schema)
-
+    
     conn.close()
 
     app = QtWidgets.QApplication(sys.argv)
