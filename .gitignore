@@ -3,6 +3,14 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+*.zip
+config.json
+ТЗ.md
+myapp.desktop
+main.ui
+test.py
+run.sh
+
 # C extensions
 *.so
 
