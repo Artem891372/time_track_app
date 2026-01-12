@@ -1,6 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Time Tracking Application
-Exec=/var/home/artemtsvetkov/Общий\ мусор/Мои\ идеи/Секундомер\ работы/.venv/bin/python /var/home/artemtsvetkov/Общий\ мусор/Мои\ идеи/Секундомер\ работы/main.py
-Terminal=true
-Categories=Utility;
