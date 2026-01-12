@@ -2,7 +2,7 @@
 
 Приложение для учета рабочего времени по различным типам задач с визуализацией прогресса.
 
-<img width="1280" height="576" alt="image" src="https://github.com/user-attachments/assets/ff7d006f-8554-4b09-ac76-12ff10adfe66" />
+<img width="3072" height="1728" alt="image" src="https://github.com/user-attachments/assets/7658f9f4-8349-4df0-9a46-188a04695f86" />
 
 ## Возможности
 
