@@ -292,7 +292,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Преобразуем секунды в часы для отображения
             hours = value / 3600
             
-            slice = QPieSlice(f"{percentage:.1f}%", percentage)
+            slice = QPieSlice(f"{percentage:.1f}% {hours:.1f} ч.", percentage)
             slice.setColor(color)
             
             # Настройка отображения текста
